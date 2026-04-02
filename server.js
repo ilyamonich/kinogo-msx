@@ -72,7 +72,7 @@ app.get('/movies.json', async (req, res) => {
 });
 
 // Корневой эндпоинт для проверки работы сервера
-app.get('/start.json', (req, res) => {
+app.get('/msx/start.json', (req, res) => {
     res.json({
         settings: { title: 'Kinogo', bgColor: '#0A0A0A', textColor: '#FFFFFF' },
         menu: [{ title: '🎬 Новинки фильмов', type: 'link', target: '/movies.json' }]
