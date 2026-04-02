@@ -135,7 +135,7 @@ app.get('/movie.json', async (req, res) => {
 });
 
 // --- Корневой эндпоинт (start.json) ---
-app.get('/start.json', (req, res) => {
+app.get('/msx/start.json', (req, res) => {
     res.json({
         settings: { title: 'HDkinoteatr', bgColor: '#0A0A0A', textColor: '#FFFFFF' },
         menu: [
