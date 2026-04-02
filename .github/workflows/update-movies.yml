@@ -1,0 +1,40 @@
+name: Update movies.json
+
+on:
+  schedule:
+    # Запуск каждые 6 часов (можно изменить интервал)
+    - cron: '0 */6 * * *'
+  # Возможность запустить вручную из интерфейса GitHub
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      
+      - name: Install dependencies
+        run: npm install
+      
+      - name: Run parser
+        run: node parse.js
+      
+      - name: Copy movies.json to msx folder
+        run: |
+          mkdir -p msx
+          cp movies.json msx/
+      
+      - name: Commit and push if changed
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add msx/movies.json
+          git diff --quiet && git diff --staged --quiet || git commit -m "Auto-update movies.json $(date -u '+%Y-%m-%d %H:%M:%S')"
+          git push
