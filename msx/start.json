@@ -1,8 +1,10 @@
 {
   "settings": {
-    "title": "Kinogo",
+    "title": "HDkinoteatr",
     "bgColor": "#0A0A0A",
-    "textColor": "#FFFFFF"
+    "textColor": "#FFFFFF",
+    "fontSize": 16,
+    "fontFamily": "sans-serif"
   },
   "menu": [
     {
