@@ -1,0 +1,14 @@
+{
+  "settings": {
+    "title": "Kinogo",
+    "bgColor": "#0A0A0A",
+    "textColor": "#FFFFFF"
+  },
+  "menu": [
+    {
+      "title": "🎬 Новинки фильмов",
+      "type": "link",
+      "target": "/msx/movies.json"
+    }
+  ]
+}
