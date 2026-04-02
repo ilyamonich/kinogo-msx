@@ -1,259 +1,151 @@
 const express = require('express');
-const { getLatest, getCategory, getMovieDetail, search } = require('./scraper');
+const axios = require('axios');
+const cheerio = require('cheerio');
 
 const app = express();
-const PORT = 5000;
+const PORT = process.env.PORT || 3000;
+const NEW_BASE_URL = 'https://hdkinoteatr.com';
 
-app.use((req, res, next) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Headers', '*');
-    res.setHeader('Content-Type', 'application/json; charset=utf-8');
-    next();
-});
+// --- Функция для извлечения ссылки на видео ---
+async function extractVideoUrl(pageUrl) {
+    try {
+        // 1. Загружаем страницу фильма
+        const { data } = await axios.get(pageUrl);
+        const $ = cheerio.load(data);
 
-function baseUrl(req) {
-    const host = process.env.REPLIT_DEV_DOMAIN
-        ? `https://${process.env.REPLIT_DEV_DOMAIN}`
-        : `${req.protocol}://${req.get('host')}`;
-    return host;
+        // 2. Ищем iframe плеера. Селектор может быть "iframe[src*='/engine/player/']"
+        // или просто первый iframe на странице. Попробуем оба варианта.
+        let iframeSrc = $('iframe[src*="/engine/player/"]').first().attr('src');
+        if (!iframeSrc) {
+            iframeSrc = $('iframe').first().attr('src');
+        }
+        if (!iframeSrc) return null;
+
+        const playerUrl = iframeSrc.startsWith('http') ? iframeSrc : NEW_BASE_URL + iframeSrc;
+
+        // 3. Загружаем страницу плеера
+        const playerRes = await axios.get(playerUrl);
+        const $player = cheerio.load(playerRes.data);
+
+        // 4. Ищем ссылку на видео (.m3u8 или .mp4)
+        let videoSrc = $player('video source').first().attr('src');
+        if (!videoSrc) {
+            const scripts = $player('script').map((i, el) => $(el).html()).get();
+            for (const script of scripts) {
+                const match = script.match(/(https?:\/\/[^\s"']+\.m3u8[^\s"']*)/);
+                if (match) {
+                    videoSrc = match[1];
+                    break;
+                }
+            }
+        }
+        return videoSrc || null;
+    } catch (error) {
+        console.error(`[Parser Error] Не удалось извлечь видео с ${pageUrl}:`, error.message);
+        return null;
+    }
 }
 
-const CATEGORIES = [
-    { slug: 'action',      label: 'Боевики',        icon: 'local_fire_department' },
-    { slug: 'comedy',      label: 'Комедии',         icon: 'sentiment_very_satisfied' },
-    { slug: 'drama',       label: 'Драмы',           icon: 'theater_comedy' },
-    { slug: 'fantasy',     label: 'Фэнтези',         icon: 'auto_fix_high' },
-    { slug: 'horror',      label: 'Ужасы',           icon: 'pest_control' },
-    { slug: 'sci-fi',      label: 'Фантастика',      icon: 'rocket_launch' },
-    { slug: 'thriller',    label: 'Триллеры',        icon: 'remove_red_eye' },
-    { slug: 'serial',      label: 'Сериалы',         icon: 'live_tv' },
-    { slug: 'animation',   label: 'Мультфильмы',     icon: 'animation' },
-    { slug: 'documentry',  label: 'Документальные',  icon: 'videocam' },
-];
-
-// ─── MSX Start file ───────────────────────────────────────────────────────────
-app.get('/start.json', (req, res) => {
-    const base = baseUrl(req);
-    res.json({
-        name: 'HD КиноТеатр',
-        version: '1.0.0',
-        parameter: `request:interaction:init@${base}/api/menu`,
-    });
-});
-
-// ─── Main menu ────────────────────────────────────────────────────────────────
-app.get('/api/menu', (req, res) => {
-    const base = baseUrl(req);
-    const items = [
-        {
-            type: 'default',
-            label: '🎬 Новинки',
-            action: `content:${base}/api/latest`,
-        },
-        {
-            type: 'separator',
-            label: 'Жанры',
-        },
-        ...CATEGORIES.map(cat => ({
-            type: 'default',
-            label: cat.label,
-            action: `content:${base}/api/category/${cat.slug}`,
-        })),
-        {
-            type: 'separator',
-            label: ' ',
-        },
-        {
-            type: 'default',
-            label: '🔍 Поиск',
-            action: `panel:search:request:interaction:execute@${base}/api/search?q={VALUE}`,
-        },
-    ];
-
-    res.json({
-        settings: {
-            title: 'HD КиноТеатр',
-            backgroundColor: '#111111',
-        },
-        items,
-    });
-});
-
-// ─── Latest movies ────────────────────────────────────────────────────────────
-app.get('/api/latest', async (req, res) => {
-    const base = baseUrl(req);
+// --- Эндпоинт: список фильмов ---
+app.get('/movies.json', async (req, res) => {
     try {
-        const movies = await getLatest();
-        res.json(buildMovieList(movies, 'Новинки', base));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
+        console.log('[INFO] Запрос списка фильмов...');
+        const { data } = await axios.get(NEW_BASE_URL);
+        const $ = cheerio.load(data);
+        const movies = [];
 
-// ─── Category ─────────────────────────────────────────────────────────────────
-app.get('/api/category/:slug', async (req, res) => {
-    const base = baseUrl(req);
-    const { slug } = req.params;
-    const page = parseInt(req.query.page) || 1;
-    const cat = CATEGORIES.find(c => c.slug === slug);
-    const title = cat ? cat.label : slug;
+        // Используем актуальный селектор для карточек фильмов на главной странице
+        $('.shortstory').each((i, el) => {
+            const titleEl = $(el).find('.shortstory__title a');
+            let title = titleEl.text().trim();
+            let link = titleEl.attr('href');
 
-    try {
-        const movies = await getCategory(slug, page);
-        const list = buildMovieList(movies, title, base);
-
-        // Add next page button
-        if (movies.length >= 10) {
-            list.items.push({
-                type: 'default',
-                label: `Страница ${page + 1} →`,
-                action: `content:${base}/api/category/${slug}?page=${page + 1}`,
-            });
-        }
-
-        res.json(list);
-    } catch (err) {
-        res.status(500).json({ error: err.message });
-    }
-});
-
-// ─── Movie detail ─────────────────────────────────────────────────────────────
-app.get('/api/movie', async (req, res) => {
-    const { url } = req.query;
-    if (!url) return res.status(400).json({ error: 'url is required' });
-
-    try {
-        const detail = await getMovieDetail(url);
-        const items = [];
-
-        if (detail.description) {
-            items.push({
-                type: 'default',
-                label: detail.description,
-                enable: false,
-                color: 'msx-grey',
-            });
-        }
-
-        const playablePlayers = detail.players.filter(p =>
-            !p.url.includes('youtube.com')
-        );
-        const trailers = detail.players.filter(p =>
-            p.url.includes('youtube.com')
-        );
-
-        if (playablePlayers.length === 0 && trailers.length === 0) {
-            items.push({
-                type: 'default',
-                label: '🌐 Открыть страницу фильма',
-                action: `iframe:${url}`,
-            });
-        } else {
-            playablePlayers.forEach(player => {
-                items.push({
-                    type: 'default',
-                    label: player.label,
-                    action: `iframe:${player.url}`,
+            // Если title не найден, пробуем другой селектор
+            if (!title) {
+                const altTitleEl = $(el).find('h2 a');
+                title = altTitleEl.text().trim();
+                link = altTitleEl.attr('href');
+            }
+            
+            const poster = $(el).find('.shortstory__image img').attr('src');
+            
+            if (title && link) {
+                const fullLink = link.startsWith('http') ? link : NEW_BASE_URL + link;
+                movies.push({
+                    title: title,
+                    type: 'video', // Указываем тип, чтобы MSX открывал плеер
+                    poster: poster ? (poster.startsWith('http') ? poster : NEW_BASE_URL + poster) : '',
+                    url: fullLink, // Сохраняем ссылку на страницу фильма
                 });
-            });
-            trailers.forEach(player => {
-                items.push({
-                    type: 'default',
-                    label: player.label,
-                    action: `iframe:${player.url}`,
-                });
-            });
-        }
+            }
+        });
+
+        // Ограничим количество фильмов для быстрой загрузки, например, первыми 20
+        const limitedMovies = movies.slice(0, 20);
+        console.log(`[INFO] Успешно получено ${limitedMovies.length} фильмов.`);
 
         res.json({
-            settings: {
-                title: detail.title,
-                backgroundColor: '#111111',
-                backgroundImage: detail.poster,
-                backgroundImageBlur: true,
-            },
-            items,
+            settings: { title: 'Новинки HDkinoteatr', bgColor: '#0A0A0A' },
+            items: limitedMovies
         });
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+    } catch (error) {
+        console.error('[Server Error] Ошибка при получении списка фильмов:', error);
+        res.status(500).json({ error: 'Не удалось загрузить список фильмов' });
     }
 });
 
-// ─── Search ───────────────────────────────────────────────────────────────────
-app.get('/api/search', async (req, res) => {
-    const base = baseUrl(req);
-    const q = req.query.q || '';
-    if (!q.trim()) return res.json({ settings: { title: 'Поиск' }, items: [] });
+// --- Эндпоинт: страница фильма (генерирует ссылку на видео) ---
+// Этот эндпоинт вызывается, когда пользователь выбирает фильм.
+app.get('/movie.json', async (req, res) => {
+    const moviePageUrl = req.query.url;
+    if (!moviePageUrl) {
+        return res.status(400).json({ error: 'URL фильма не указан' });
+    }
 
     try {
-        const movies = await search(q);
-        res.json(buildMovieList(movies, `Поиск: ${q}`, base));
-    } catch (err) {
-        res.status(500).json({ error: err.message });
+        console.log(`[INFO] Обработка фильма: ${moviePageUrl}`);
+        const videoUrl = await extractVideoUrl(moviePageUrl);
+        
+        if (videoUrl) {
+            // Если нашли видео, возвращаем данные для MSX плеера
+            res.json({
+                settings: { title: 'Плеер', bgColor: '#000000' },
+                items: [{
+                    title: 'Смотреть',
+                    type: 'video',
+                    url: videoUrl
+                }]
+            });
+        } else {
+            // Если видео не найдено, возвращаем HTML-страницу (как fallback)
+            console.warn(`[WARN] Видео не найдено для ${moviePageUrl}, возвращаем HTML.`);
+            res.json({
+                settings: { title: 'Ошибка', bgColor: '#000000' },
+                items: [{
+                    title: 'Видео не найдено. Открыть страницу фильма?',
+                    type: 'html',
+                    url: moviePageUrl
+                }]
+            });
+        }
+    } catch (error) {
+        console.error(`[Server Error] Ошибка при обработке фильма ${moviePageUrl}:`, error);
+        res.status(500).json({ error: 'Ошибка сервера при обработке фильма' });
     }
 });
 
-// ─── Helper ───────────────────────────────────────────────────────────────────
-function buildMovieList(movies, title, base) {
-    const items = movies.map(m => ({
-        type: 'default',
-        title: m.title,
-        titleFooter: [m.year, m.hd].filter(Boolean).join(' • '),
-        image: m.poster,
-        imageFull: m.fullImg || m.poster,
-        action: `content:${base}/api/movie?url=${encodeURIComponent(m.href)}`,
-    }));
-
-    return {
-        settings: {
-            title,
-            view: 3,
-            backgroundColor: '#111111',
-        },
-        items,
-    };
-}
-
-// ─── Info page ────────────────────────────────────────────────────────────────
-app.get('/', (req, res) => {
-    const base = baseUrl(req);
-    res.setHeader('Content-Type', 'text/html; charset=utf-8');
-    res.send(`<!DOCTYPE html>
-<html lang="ru">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>HD КиноТеатр — MSX</title>
-  <style>
-    * { box-sizing: border-box; margin: 0; padding: 0; }
-    body { background: #111; color: #eee; font-family: sans-serif; display: flex; align-items: center; justify-content: center; min-height: 100vh; padding: 20px; }
-    .card { background: #1e1e1e; border-radius: 12px; padding: 40px; max-width: 520px; width: 100%; box-shadow: 0 8px 32px rgba(0,0,0,0.5); }
-    h1 { font-size: 1.8rem; margin-bottom: 8px; color: #fff; }
-    p { color: #aaa; margin-bottom: 24px; line-height: 1.6; }
-    .badge { display: inline-block; background: #e53935; color: #fff; padding: 4px 10px; border-radius: 6px; font-size: 0.75rem; font-weight: bold; margin-bottom: 16px; letter-spacing: 1px; }
-    .url-box { background: #2a2a2a; border: 1px solid #444; border-radius: 8px; padding: 14px 16px; font-family: monospace; font-size: 0.95rem; color: #7ec8e3; word-break: break-all; margin-bottom: 24px; }
-    .steps { list-style: none; counter-reset: steps; }
-    .steps li { counter-increment: steps; display: flex; gap: 14px; margin-bottom: 14px; align-items: flex-start; }
-    .steps li::before { content: counter(steps); background: #e53935; color: #fff; min-width: 28px; height: 28px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-weight: bold; font-size: 0.85rem; flex-shrink: 0; }
-    .steps li span { color: #ccc; line-height: 1.6; padding-top: 4px; }
-  </style>
-</head>
-<body>
-  <div class="card">
-    <div class="badge">MSX</div>
-    <h1>HD КиноТеатр</h1>
-    <p>Веб-приложение для Media Station X на базе hdkinoteatr.com</p>
-    <div class="url-box">${base}/start.json</div>
-    <ol class="steps">
-      <li><span>Откройте <strong>Media Station X</strong> на вашем устройстве</span></li>
-      <li><span>Перейдите в <strong>Настройки → Источник контента</strong></span></li>
-      <li><span>Введите URL выше и нажмите <strong>OK</strong></span></li>
-    </ol>
-  </div>
-</body>
-</html>`);
+// --- Корневой эндпоинт (start.json) ---
+app.get('/start.json', (req, res) => {
+    res.json({
+        settings: { title: 'HDkinoteatr', bgColor: '#0A0A0A', textColor: '#FFFFFF' },
+        menu: [
+            { title: '🎬 Новинки фильмов', type: 'link', target: '/movies.json' }
+        ]
+    });
 });
 
-app.listen(PORT, '0.0.0.0', () => {
-    console.log(`HD КиноТеатр MSX запущен на порту ${PORT}`);
+app.listen(PORT, () => {
+    console.log(`✅ MSX Сервер для HDkinoteatr запущен!`);
+    console.log(`🌐 Адрес для настройки в MSX: http://localhost:${PORT}/start.json`);
+    console.log(`📋 Проверьте список фильмов: http://localhost:${PORT}/movies.json`);
 });
