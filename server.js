@@ -7,34 +7,25 @@ const app = express();
 const PORT = process.env.PORT || 3000;
 const BASE_URL = 'https://hdkinoteatr.com';
 
-// Разрешаем CORS для всех запросов
 app.use(cors());
-
-// --------------------------------------------------------------
-// 1. Отдача статики (если нужна) – не обязательно, но оставим
-// --------------------------------------------------------------
 app.use(express.json());
 
 // --------------------------------------------------------------
-// 2. Вспомогательная функция: извлечение прямой ссылки на видео
+// 1. Функция извлечения прямой ссылки на видео
 // --------------------------------------------------------------
 async function extractVideoUrl(pageUrl) {
     try {
         const { data } = await axios.get(pageUrl, { timeout: 15000 });
         const $ = cheerio.load(data);
 
-        // Ищем iframe плеера
         let iframeSrc = $('iframe[src*="/engine/player/"]').first().attr('src');
-        if (!iframeSrc) {
-            iframeSrc = $('iframe').first().attr('src');
-        }
+        if (!iframeSrc) iframeSrc = $('iframe').first().attr('src');
         if (!iframeSrc) return null;
 
         const playerUrl = iframeSrc.startsWith('http') ? iframeSrc : BASE_URL + iframeSrc;
         const playerRes = await axios.get(playerUrl, { timeout: 10000 });
         const $player = cheerio.load(playerRes.data);
 
-        // Ищем video source или m3u8 в скриптах
         let videoSrc = $player('video source').first().attr('src');
         if (!videoSrc) {
             const scripts = $player('script').map((i, el) => $(el).html()).get();
@@ -48,13 +39,13 @@ async function extractVideoUrl(pageUrl) {
         }
         return videoSrc || null;
     } catch (error) {
-        console.error(`[Ошибка извлечения видео] ${pageUrl}:`, error.message);
+        console.error('[Ошибка извлечения видео]', error.message);
         return null;
     }
 }
 
 // --------------------------------------------------------------
-// 3. Получение списка фильмов с главной страницы
+// 2. Функция получения списка фильмов
 // --------------------------------------------------------------
 async function getMoviesList() {
     try {
@@ -62,13 +53,11 @@ async function getMoviesList() {
         const $ = cheerio.load(data);
         const movies = [];
 
-        // Селекторы для карточек фильмов на hdkinoteatr.com
         $('.shortstory').each((i, el) => {
             let titleEl = $(el).find('.shortstory__title a');
             let title = titleEl.text().trim();
             let link = titleEl.attr('href');
 
-            // Fallback: если не нашли, пробуем h2 a
             if (!title) {
                 titleEl = $(el).find('h2 a');
                 title = titleEl.text().trim();
@@ -85,8 +74,6 @@ async function getMoviesList() {
                 });
             }
         });
-
-        // Ограничим первыми 30 фильмами для быстрой загрузки
         return movies.slice(0, 30);
     } catch (error) {
         console.error('[Ошибка парсинга списка]', error.message);
@@ -95,12 +82,9 @@ async function getMoviesList() {
 }
 
 // --------------------------------------------------------------
-// 4. Маршруты для MSX (все внутри /msx)
+// 3. Обработчики для КОРНЕВЫХ маршрутов (то, что нужно MSX)
 // --------------------------------------------------------------
-const msxRouter = express.Router();
-
-// start.json – главное меню
-msxRouter.get('/start.json', (req, res) => {
+app.get('/start.json', (req, res) => {
     res.json({
         settings: {
             title: 'HDkinoteatr',
@@ -111,39 +95,33 @@ msxRouter.get('/start.json', (req, res) => {
             {
                 title: '🎬 Новинки фильмов',
                 type: 'link',
-                target: '/msx/movies.json'
+                target: '/movies.json'   // ссылка на корневой movies.json
             }
         ]
     });
 });
 
-// movies.json – список фильмов (генерируется динамически)
-msxRouter.get('/movies.json', async (req, res) => {
-    console.log('[Запрос] /msx/movies.json');
+app.get('/movies.json', async (req, res) => {
+    console.log('[Запрос] /movies.json');
     const movies = await getMoviesList();
     if (movies.length === 0) {
         return res.status(500).json({ error: 'Не удалось загрузить список фильмов' });
     }
 
-    // Преобразуем в формат MSX
     const items = movies.map(movie => ({
         title: movie.title,
-        type: 'video',         // MSX откроет плеер, но нужен ещё один запрос для получения ссылки
+        type: 'video',
         poster: movie.poster,
-        url: `/msx/movie.json?url=${encodeURIComponent(movie.link)}`
+        url: `/movie.json?url=${encodeURIComponent(movie.link)}`  // ссылка на корневой movie.json
     }));
 
     res.json({
-        settings: {
-            title: 'Новинки кино',
-            bgColor: '#0A0A0A'
-        },
+        settings: { title: 'Новинки кино', bgColor: '#0A0A0A' },
         items: items
     });
 });
 
-// movie.json – получает ссылку на видео по URL страницы фильма
-msxRouter.get('/movie.json', async (req, res) => {
+app.get('/movie.json', async (req, res) => {
     const moviePageUrl = req.query.url;
     if (!moviePageUrl) {
         return res.status(400).json({ error: 'Не указан URL фильма' });
@@ -156,11 +134,10 @@ msxRouter.get('/movie.json', async (req, res) => {
             items: [{ title: 'Смотреть', type: 'video', url: videoUrl }]
         });
     } else {
-        // Если видео не найдено – открываем страницу фильма в HTML-режиме (fallback)
         res.json({
             settings: { title: 'Ошибка', bgColor: '#000000' },
             items: [{
-                title: 'Видео не найдено. Открыть страницу фильма?',
+                title: 'Видео не найдено. Открыть страницу?',
                 type: 'html',
                 url: moviePageUrl
             }]
@@ -168,27 +145,23 @@ msxRouter.get('/movie.json', async (req, res) => {
     }
 });
 
-// Подключаем роутер /msx
-app.use('/msx', msxRouter);
-
 // --------------------------------------------------------------
-// 5. Редиректы с корня на /msx (удобно для проверки)
+// 4. (Опционально) Обработчики для /msx/... – для обратной совместимости
 // --------------------------------------------------------------
-app.get('/', (req, res) => {
-    res.redirect('/msx/start.json');
-});
-app.get('/start.json', (req, res) => {
-    res.redirect('/msx/start.json');
-});
-app.get('/movies.json', (req, res) => {
-    res.redirect('/msx/movies.json');
+app.get('/msx/start.json', (req, res) => res.redirect('/start.json'));
+app.get('/msx/movies.json', (req, res) => res.redirect('/movies.json'));
+app.get('/msx/movie.json', (req, res) => {
+    // Перенаправляем с сохранением query-параметров
+    const url = req.query.url;
+    if (url) res.redirect(`/movie.json?url=${encodeURIComponent(url)}`);
+    else res.redirect('/movie.json');
 });
 
 // --------------------------------------------------------------
-// 6. Запуск сервера
+// 5. Запуск
 // --------------------------------------------------------------
 app.listen(PORT, () => {
-    console.log(`✅ MSX Сервер для HDkinoteatr запущен на порту ${PORT}`);
-    console.log(`🌐 start.json: https://localhost:${PORT}/msx/start.json (или ваш домен)`);
-    console.log(`📋 movies.json: https://localhost:${PORT}/msx/movies.json`);
+    console.log(`✅ Сервер запущен на порту ${PORT}`);
+    console.log(`📌 start.json: http://localhost:${PORT}/start.json`);
+    console.log(`📌 movies.json: http://localhost:${PORT}/movies.json`);
 });
