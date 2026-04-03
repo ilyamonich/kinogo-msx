@@ -2,9 +2,7 @@
   "settings": {
     "title": "HDkinoteatr",
     "bgColor": "#0A0A0A",
-    "textColor": "#FFFFFF",
-    "fontSize": 16,
-    "fontFamily": "sans-serif"
+    "textColor": "#FFFFFF"
   },
   "menu": [
     {
