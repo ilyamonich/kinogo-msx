@@ -11,6 +11,7 @@ app.use((req, res, next) => {
     res.setHeader('Access-Control-Allow-Origin', '*');
     res.setHeader('Access-Control-Allow-Headers', '*');
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    console.log(`[${new Date().toISOString()}] ${req.method} ${req.path} | query: ${JSON.stringify(req.query)}`);
     next();
 });
 
@@ -34,15 +35,11 @@ const CATEGORIES = [
     { slug: 'documentry',  label: 'Документальные',  icon: 'videocam' },
 ];
 
-// ─── MSX Start file ───────────────────────────────────────────────────────────
-app.get('/start.json', (req, res) => {
-    const base = baseUrl(req);
-    res.json({
-        name: 'HD КиноТеатр',
-        version: '1.0.0',
-        parameter: `request:interaction:init@${base}/api/menu`,
-    });
-});
+// ─── Favicon (чтобы не было 404) ──────────────────────────────────────────────
+app.get('/favicon.ico', (req, res) => res.status(204).end());
+
+// ─── MSX Start file (редирект на корень) ──────────────────────────────────────
+app.get('/start.json', (req, res) => res.redirect('/'));
 
 // ─── Main menu ────────────────────────────────────────────────────────────────
 app.get('/api/menu', (req, res) => {
@@ -217,13 +214,40 @@ function buildMovieList(movies, title, base) {
     };
 }
 
-// ─── Root — MSX start (домен без пути, т.к. MSX не позволяет вводить "/") ─────
+// ─── Root — отдаём меню напрямую (MSX "setup start parameter" ожидает контент)
 app.get('/', (req, res) => {
     const base = baseUrl(req);
+    const items = [
+        {
+            type: 'default',
+            label: '🎬 Новинки',
+            action: `content:${base}/api/latest`,
+        },
+        {
+            type: 'separator',
+            label: 'Жанры',
+        },
+        ...CATEGORIES.map(cat => ({
+            type: 'default',
+            label: cat.label,
+            action: `content:${base}/api/category/${cat.slug}`,
+        })),
+        {
+            type: 'separator',
+            label: ' ',
+        },
+        {
+            type: 'default',
+            label: '🔍 Поиск',
+            action: `panel:search:request:interaction:execute@${base}/api/search?q={VALUE}`,
+        },
+    ];
     res.json({
-        name: 'HD КиноТеатр',
-        version: '1.0.0',
-        parameter: `request:interaction:init@${base}/api/menu`,
+        settings: {
+            title: 'HD КиноТеатр',
+            backgroundColor: '#111111',
+        },
+        items,
     });
 });
 
@@ -265,6 +289,18 @@ app.get('/info', (req, res) => {
   </div>
 </body>
 </html>`);
+});
+
+// ─── 404 handler ──────────────────────────────────────────────────────────────
+app.use((req, res) => {
+    console.log(`[404] Путь не найден: ${req.method} ${req.originalUrl}`);
+    res.status(404).json({ error: 'Not found', path: req.originalUrl });
+});
+
+// ─── Error handler ─────────────────────────────────────────────────────────────
+app.use((err, req, res, next) => {
+    console.error(`[ERROR] ${req.method} ${req.originalUrl}:`, err.message);
+    res.status(500).json({ error: err.message });
 });
 
 app.listen(PORT, '0.0.0.0', () => {
