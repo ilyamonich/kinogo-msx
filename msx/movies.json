@@ -1,0 +1,6 @@
+{
+  "settings": { "title": "Фильмы", "bgColor": "#0A0A0A" },
+  "items": [
+    { "title": "Тестовый фильм", "type": "video", "url": "https://test-streams.mux.dev/x36xhzz/x36xhzz.m3u8" }
+  ]
+}
